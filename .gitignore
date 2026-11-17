@@ -1,0 +1,12 @@
+.godot/
+.DS_Store
+
+# Local game assets, export files, and settings
+*.jar
+*.pck
+*.zip
+*.app/
+exports/
+export_credentials.cfg
+.env
+.env.*
