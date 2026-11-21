@@ -57,11 +57,14 @@ func disconnect_session() -> void:
 	if connection != null:
 		connection.close()
 	ready_to_play = false
+	clear_poses()
+	game.players.clear()
+
+func clear_poses() -> void:
 	for node in avatars.values():
 		node.queue_free()
 	avatars.clear()
 	poses.clear()
-	game.players.clear()
 
 func _lost() -> void:
 	disconnect_session()
@@ -101,7 +104,7 @@ func send_level(id: int) -> void:
 	finish_level.rpc_id(id)
 
 func broadcast_level() -> void:
-	poses.clear()
+	clear_poses()
 	for id in multiplayer.get_peers():
 		if game.players.has(id):
 			send_level(id)
@@ -111,6 +114,7 @@ func start_level(new_seed: int, edge: int) -> void:
 	if edge not in [128, 256, 512]:
 		return
 	ready_to_play = false
+	clear_poses()
 	game.reset_level(new_seed, edge)
 
 @rpc("authority", "call_remote", "reliable")

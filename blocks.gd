@@ -1,5 +1,7 @@
 extends RefCounted
 
+const Recipes = preload("res://survival_recipes.gd")
+const ClientCache = preload("res://client_cache.gd")
 const NAMES = [
 	"Air", "Stone", "Cobblestone", "Dirt", "Planks", "Log", "Leaves", "Sapling",
 	"Dandelion", "Rose", "Brown mushroom", "Red mushroom", "Sand", "Gravel", "Glass",
@@ -7,7 +9,8 @@ const NAMES = [
 	"Green cloth", "Aqua cloth", "Cyan cloth", "Blue cloth", "Indigo cloth",
 	"Violet cloth", "Purple cloth", "Magenta cloth", "Pink cloth", "Dark gray cloth",
 	"Gray cloth", "White cloth", "Grass", "Bedrock", "Water", "Lava", "Coal ore",
-	"Iron ore", "Gold ore"
+	"Iron ore", "Gold ore", "Grass top", "Oak log top",
+	"Cherry log", "Cherry leaves", "Cherry log top", "Cherry planks", "Crafting table", "Furnace"
 ]
 const PALETTE_COUNT := 32
 const HOTBAR := [1, 3, 4, 2, 12, 13, 5, 6, 11]
@@ -17,6 +20,12 @@ const WATER := 35
 const LAVA := 36
 const GRASS_TOP := 40
 const LOG_TOP := 41
+const CHERRY_LOG := 42
+const CHERRY_LEAVES := 43
+const CHERRY_LOG_TOP := 44
+const CHERRY_PLANKS := 45
+const CRAFTING_TABLE := 46
+const FURNACE := 47
 const COLS := 8
 const ROWS := 6
 const TILE := 16
@@ -27,13 +36,13 @@ const COLORS = [
 	0xffe44c, 0xbe2926, 0xdd7c22, 0xe5ca26, 0x96cf2d, 0x3ab333, 0x31bf85, 0x37bbbd,
 	0x478ecf, 0x5755c8, 0x7436b9, 0xa940c0, 0xcd39a3, 0xcd527a, 0x535357, 0x9d9d9d,
 	0xdfdedb, 0x765237, 0x424145, 0x416cdb, 0xec631b, 0x818181, 0x818181, 0x818181,
-	0x639c38, 0xae8b54
+	0x639c38, 0xae8b54, 0x493036, 0xe5a2ba, 0xd58e91, 0xd99da0, 0x9b7953, 0x686b70
 ]
 
 const LEGACY_TILES := [
 	0, 1, 16, 2, 4, 20, 52, 15, 13, 12, 29, 28, 18, 19, 49, 48, 23,
 	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-	3, 17, 205, 237, 34, 33, 32, 0, 21
+	3, 17, 205, 237, 34, 33, 32, 0, 21, 20, 52, 21, 4, 4, 1
 ]
 const MODERN_NAMES := [
 	"", "stone", "cobblestone", "dirt", "oak_planks", "oak_log", "oak_leaves",
@@ -42,9 +51,10 @@ const MODERN_NAMES := [
 	"lime_wool", "green_wool", "lime_wool", "cyan_wool", "light_blue_wool", "blue_wool",
 	"blue_wool", "purple_wool", "magenta_wool", "pink_wool", "gray_wool", "light_gray_wool",
 	"white_wool", "grass_block_side", "bedrock", "water_still", "lava_still",
-	"coal_ore", "iron_ore", "gold_ore", "grass_block_top", "oak_log_top"
+	"coal_ore", "iron_ore", "gold_ore", "grass_block_top", "oak_log_top", "cherry_log", "cherry_leaves", "cherry_log_top", "cherry_planks", "crafting_table_front", "furnace_front"
 ]
 const BLOCK_PATH := "assets/minecraft/textures/block/"
+const PANORAMA_PATH := "textures/gui/title/background/panorama_%d.png"
 const GUI_PATH := "assets/minecraft/textures/gui/sprites/hud/"
 
 var atlas: ImageTexture
@@ -52,8 +62,13 @@ var icons: Array[AtlasTexture] = []
 var hotbar: ImageTexture
 var selector: ImageTexture
 var crosshair: ImageTexture
+var item_art: Dictionary = {}
+var palette_slot: ImageTexture
+var field_art: Array[ImageTexture] = []
 var button_art: Array[ImageTexture] = []
 var source_path := ""
+var hearts: Array[ImageTexture] = []
+var panorama: Array[ImageTexture] = []
 
 static func plant(id: int) -> bool:
 	return id >= 7 and id <= 11
@@ -67,8 +82,8 @@ static func solid(id: int) -> bool:
 static func tile_for(id: int, face: int) -> int:
 	if id == GRASS:
 		return GRASS_TOP if face == 2 else (3 if face == 3 else GRASS)
-	if id == 5 and (face == 2 or face == 3):
-		return LOG_TOP
+	if (id == 5 or id == CHERRY_LOG) and (face == 2 or face == 3):
+		return LOG_TOP if id == 5 else CHERRY_LOG_TOP
 	return id
 
 static func minecraft_directory() -> String:
@@ -82,11 +97,11 @@ static func minecraft_directory() -> String:
 
 static func default_candidates() -> PackedStringArray:
 	var versions := minecraft_directory().path_join("versions")
-	var names := Array(DirAccess.get_directories_at(versions))
+	var names := Array(DirAccess.get_directories_at(versions)) if DirAccess.dir_exists_absolute(versions) else []
 	names.sort_custom(func(a: String, b: String): return a.naturalnocasecmp_to(b) > 0)
 	var candidates := PackedStringArray()
-	# A nearby historical release looks closer to the reference browser version.
-	for release in ["c0.0.23a_01", "c0.0.30a-2210", "1.0", "26.3"]:
+	# Prefer the requested Java client, then keep the Classic fallback order.
+	for release in ["26.3", "c0.0.23a_01", "c0.0.30a-2210", "1.0"]:
 		candidates.append(versions.path_join(release).path_join(release + ".jar"))
 	for release: String in names:
 		var path := versions.path_join(release).path_join(release + ".jar")
@@ -119,6 +134,8 @@ func load_jar(path: String) -> bool:
 		return false
 	build_atlas(archive, legacy)
 	load_interface(archive)
+	load_item_art(archive)
+	load_panorama(archive, path)
 	archive.close()
 	source_path = path
 	return true
@@ -140,7 +157,75 @@ func region(img: Image, rect: Rect2i) -> ImageTexture:
 		return null
 	return ImageTexture.create_from_image(img.get_region(rect))
 
+func load_panorama(archive: ZIPReader, path: String) -> void:
+	panorama.clear()
+	var root := minecraft_directory()
+	var cherry_client := root.path_join("versions/1.20.2/1.20.2.jar")
+	var cherry_index: String = ClientCache.read_json(cherry_client.get_basename() + ".json").get("assetIndex", {}).get("id", "")
+	var cherry_cache := root.path_join("assets/indexes").path_join(cherry_index + ".json")
+	# Prefer the installed 1.20 cherry-grove scene shown in the reference.
+	if load_cached_panorama(cherry_cache):
+		return
+	var faces: Array[Image] = []
+	for face in 6:
+		faces.append(read_png(archive, "assets/minecraft/" + (PANORAMA_PATH % face)))
+	if set_panorama(faces):
+		return
+	for index_path in ClientCache.index_candidates(path, root):
+		if index_path != cherry_cache and load_cached_panorama(index_path):
+			return
+
+func load_cached_panorama(index_path: String) -> bool:
+	var objects: Dictionary = ClientCache.read_json(index_path).get("objects", {})
+	var faces: Array[Image] = []
+	for face in 6:
+		var path := ClientCache.object_path(index_path, objects, PANORAMA_PATH % face)
+		if path.is_empty() or not FileAccess.file_exists(path):
+			return false
+		var image := Image.new()
+		if image.load_png_from_buffer(FileAccess.get_file_as_bytes(path)) != OK:
+			return false
+		faces.append(image)
+	return set_panorama(faces)
+
+func set_panorama(faces: Array[Image]) -> bool:
+	for image in faces:
+		if image == null or image.get_width() < 16 or image.get_width() != image.get_height():
+			return false
+	for image in faces:
+		panorama.append(ImageTexture.create_from_image(image))
+	return true
+
+func load_item_art(archive: ZIPReader) -> void:
+	item_art.clear()
+	for id: String in Recipes.ITEMS:
+		var name := id.get_slice(":", 1)
+		if id == Recipes.FIBER:
+			name = "string"
+		var image := read_png(archive, "assets/minecraft/textures/item/" + name + ".png")
+		if image != null:
+			item_art[id] = ImageTexture.create_from_image(image)
+		elif name == "shield":
+			var shield := interface_sprite(archive, "container/slot/shield")
+			if shield != null:
+				item_art[id] = shield
+	for station in [Recipes.WORKBENCH, Recipes.FURNACE]:
+		var name := "crafting_table_front" if station == Recipes.WORKBENCH else "furnace_front"
+		var image := read_png(archive, BLOCK_PATH + name + ".png")
+		if image != null:
+			item_art[station] = ImageTexture.create_from_image(image)
+
+func interface_sprite(archive: ZIPReader, relative_path: String) -> ImageTexture:
+	var image := read_png(archive, "assets/minecraft/textures/gui/sprites/" + relative_path + ".png")
+	return ImageTexture.create_from_image(image) if image != null else null
+
 func load_interface(archive: ZIPReader) -> void:
+	palette_slot = interface_sprite(archive, "container/slot")
+	field_art = [interface_sprite(archive, "widget/text_field"), interface_sprite(archive, "widget/text_field_highlighted")]
+	hearts.clear()
+	for sprite in ["container", "half", "full"]:
+		var heart := read_png(archive, GUI_PATH + "heart/" + sprite + ".png")
+		hearts.append(ImageTexture.create_from_image(heart) if heart != null else null)
 	hotbar = null
 	selector = null
 	crosshair = null
@@ -168,8 +253,13 @@ func load_interface(archive: ZIPReader) -> void:
 
 func build_atlas(archive: ZIPReader, legacy: Image) -> void:
 	var image := Image.create(COLS * TILE, ROWS * TILE, false, Image.FORMAT_RGBA8)
+	var grass := Color("80b74a")
+	var leaves := Color("63ac37")
+	if archive != null and legacy == null:
+		grass = plains_tint(archive, "grass", grass)
+		leaves = plains_tint(archive, "foliage", leaves)
 	for id in COLORS.size():
-		var tile := load_tile(archive, legacy, id)
+		var tile := load_tile(archive, legacy, id, grass, leaves)
 		var origin := Vector2i(id % COLS, id / COLS) * TILE
 		image.blit_rect(tile, Rect2i(0, 0, TILE, TILE), origin)
 	atlas = ImageTexture.create_from_image(image)
@@ -181,7 +271,16 @@ func build_atlas(archive: ZIPReader, legacy: Image) -> void:
 		icon.filter_clip = true
 		icons.append(icon)
 
-func load_tile(archive: ZIPReader, legacy: Image, id: int) -> Image:
+func plains_tint(archive: ZIPReader, map: String, fallback: Color) -> Color:
+	var colors := read_png(archive, "assets/minecraft/textures/colormap/" + map + ".png")
+	if colors == null or colors.get_size() != Vector2i(256, 256):
+		return fallback
+	# A single plains tint suits this milestone's terrain without biome data.
+	var temperature := 0.8
+	var rainfall := 0.4
+	return colors.get_pixel(int((1.0 - temperature) * 255), int((1.0 - rainfall * temperature) * 255))
+
+func load_tile(archive: ZIPReader, legacy: Image, id: int, grass: Color, leaves: Color) -> Image:
 	var tile: Image
 	if legacy != null and id != 0:
 		var cell: int = LEGACY_TILES[id]
@@ -199,9 +298,9 @@ func load_tile(archive: ZIPReader, legacy: Image, id: int) -> Image:
 	else:
 		tile.resize(TILE, TILE, Image.INTERPOLATE_NEAREST)
 		if id == GRASS_TOP:
-			tint(tile, Color("80b74a"), true)
+			tint(tile, grass, true)
 		elif id == 6:
-			tint(tile, Color("63ac37"), true)
+			tint(tile, leaves, true)
 		elif id >= 17 and id <= 32 and legacy != null:
 			var color := Color.hex((int(COLORS[id]) << 8) | 255)
 			tint(tile, color if id != 32 else Color.WHITE)
@@ -209,7 +308,7 @@ func load_tile(archive: ZIPReader, legacy: Image, id: int) -> Image:
 			var overlay := read_png(archive, BLOCK_PATH + "grass_block_side_overlay.png")
 			if overlay != null:
 				overlay.resize(TILE, TILE, Image.INTERPOLATE_NEAREST)
-				tint(overlay, Color("80b74a"), true)
+				tint(overlay, grass, true)
 				tile.blend_rect(overlay, Rect2i(0, 0, TILE, TILE), Vector2i.ZERO)
 		elif id == WATER:
 			tint(tile, Color(0.46, 0.63, 1.0, 0.74), true)
